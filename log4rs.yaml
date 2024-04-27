@@ -1,0 +1,24 @@
+appenders:
+  stdout:
+    kind: console
+  rolling:
+    kind: rolling_file
+    path: "log/logger.log"
+    encoder:
+      pattern: "{d} - {l} - {m}{n}"
+    policy:
+      kind: compound
+      trigger:
+        kind: size
+        limit: 52428800 # bytes
+      roller:
+        kind: fixed_window
+        pattern: "log/logger.{}.log"
+        base: 1
+        count: 50
+
+root:
+  level: info
+  appenders:
+    - rolling
+    - stdout
