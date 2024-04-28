@@ -1,3 +1,4 @@
+use std::panic;
 use std::sync::Arc;
 use log::{error, info, warn};
 use crate::third::interface_identifying_captcha::{IdentifyingCaptcha};
@@ -72,11 +73,15 @@ where
     }
 
     async fn login(&mut self) -> Result<bool> {
+        // #[cfg(debug_assertions)]
         // info!("申请登录验证码: {}", self.account.email);
         loop {
             let captcha_res = self.mox.get_captcha(self.account.email.as_str()).await?;
             let captcha = self.identifying_captcha.identifying(captcha_res.img.as_str()).await?;
+
+            // #[cfg(debug_assertions)]
             // info!("登录->验证码识别成功: {} -> {}", self.account.email, captcha);
+
             let input = LoginRequest{
                 email: self.account.email.clone(),
                 password: self.account.password.clone(),
@@ -901,9 +906,12 @@ where
         if login_res.is_err() {
             let error_msg = login_res.err().unwrap().to_string();
             self.account.log_message = error_msg.clone();
-            error!("账号异常: {} -> 原因:{}", self.account.email.clone(), self.account.log_message.clone());
+            error!("登录异常: {} -> 原因:{}", self.account.email.clone(), self.account.log_message.clone());
             // 账号移动到不可用队列
-            ban_account(&self.account).await?;
+            if !self.account.log_message.contains("error sending request for url") {
+                error!("禁用账号: {}", self.account.email.clone());
+                ban_account(&self.account).await?;
+            }
             return Err(anyhow!(error_msg));
         }
         // 检查账号预约量是否
@@ -1056,11 +1064,12 @@ fn assign_account(account: &mut MoxAccount, personal: &Personal) {
 pub async fn start_task(account: MoxAccount, share_config: SystemConfig, local_config: FileConfig) ->Result<()> {
     let captcha = SBCode::new();
     let mut app = if local_config.task.disable_proxy {
-        MoxAppointment::new::<IpIdea>(&account, &share_config, &local_config, captcha, None).await
+        MoxAppointment::new::<RoxLabs>(&account, &share_config, &local_config, captcha, None).await
     } else {
         let ip_pool = RoxLabs::new(&share_config.proxy);
         MoxAppointment::new(&account, &share_config, &local_config, captcha, Some(ip_pool)).await
     };
+
     let r = app.start().await;
     if r.is_err() {
         error!("任务执行失败: {}", r.err().unwrap());
@@ -1074,12 +1083,17 @@ pub async fn start_appointment_task() ->Result<()> {
     let semaphore = Arc::new(Semaphore::new(local_config.task.max as usize));
     loop {
         let local = local_config.clone();
+        #[cfg(debug_assertions)]
+        info!("开始提取账号!");
         let mut share_config = get_share_config()?;
         match get_valid_account(&share_config.account).await {
             Ok(account) => {
-                info!("提取账号: {}", account.email.clone());
+                #[cfg(debug_assertions)]
+                info!("成功提取账号: {}", account.email.clone());
                 let sem_clone = semaphore.clone();
                 tokio::spawn(async move {
+                    #[cfg(debug_assertions)]
+                    info!("[debug]开始执行任务: {}", account.email.clone());
                     let _permit = sem_clone.acquire().await.expect("并发队列已满!");
                     if let Err(e) = start_task(account, share_config, local).await {
                         error!("任务执行失败: {}", e);
@@ -1088,7 +1102,7 @@ pub async fn start_appointment_task() ->Result<()> {
                 delay_ms(local_config.task.interval).await;
             },
             Err(e) => {
-                info!("没有可用的账号");
+                info!("账号提取异常 原因: {}", e.to_string());
                 delay_secs(local.task.retry_interval).await;
             }
         }

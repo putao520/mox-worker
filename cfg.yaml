@@ -1,5 +1,5 @@
 redis:
-  host: localhost
+  host: 127.0.0.1
   port: 6379
   username:
   password: YuYao1022
@@ -9,4 +9,4 @@ task:
   interval: 3000 # 每个账号登录间隔时间(毫秒)
   retry_interval: 10 # 无账号可用时,重试间隔时间(毫秒)
   disable_assign: true # 是否禁用任务分配
-  disable_proxy: true # 是否禁用代理
+  disable_proxy: false # 是否禁用代理

@@ -168,8 +168,8 @@ pub async fn add_valid_personal(personal: &Personal) -> Result<()> {
 // 记录预约成功的客户
 pub async fn record_success_personal(personal: &Personal) -> Result<()> {
     let mut cli = get_redis_connect().await?;
-    let n: usize = cli.rpush(PersonalType::Success.as_str(), personal).await?;
-    cli.hset(format!("{}_phone", PersonalType::Success.as_str()).as_str(), personal.phone.clone(), n).await?;
+    let _: usize = cli.rpush(PersonalType::Success.as_str(), personal).await?;
+    cli.hset(format!("{}_phone", PersonalType::Success.as_str()).as_str(), personal.phone.clone(), personal).await?;
     cli.hdel(PersonalType::Using.as_str(), personal.phone.clone()).await?;
     Ok(())
 }
@@ -177,8 +177,8 @@ pub async fn record_success_personal(personal: &Personal) -> Result<()> {
 // 记录预约失败的客户
 pub async fn record_exception_personal(personal: &Personal) -> Result<()> {
     let mut cli = get_redis_connect().await?;
-    let n: usize = cli.rpush(PersonalType::Exception.as_str(), personal).await?;
-    cli.hset(format!("{}_phone", PersonalType::Exception.as_str()).as_str(), personal.phone.clone(), n).await?;
+    let _: usize = cli.rpush(PersonalType::Exception.as_str(), personal).await?;
+    cli.hset(format!("{}_phone", PersonalType::Exception.as_str()).as_str(), personal.phone.clone(), personal).await?;
     cli.hdel(PersonalType::Using.as_str(), personal.phone.clone()).await?;
     Ok(())
 }

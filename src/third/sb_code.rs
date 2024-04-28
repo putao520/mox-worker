@@ -1,3 +1,4 @@
+use log::info;
 use crate::third::interface_identifying_captcha::IdentifyingCaptcha;
 
 pub struct SBCode {

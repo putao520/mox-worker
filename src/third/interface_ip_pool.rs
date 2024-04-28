@@ -10,6 +10,6 @@ pub trait IpPoolServices {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct IpInfo {
-    pub(crate) ip: String,
-    pub(crate) port: u32,
+    pub ip: String,
+    pub port: u32,
 }

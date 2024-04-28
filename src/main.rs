@@ -3,6 +3,7 @@ mod gsc;
 mod mox;
 mod third;
 
+use std::panic;
 use std::path::Path;
 use anyhow::Result;
 use calamine::{open_workbook, Reader, Xlsx};
@@ -30,6 +31,16 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main()->Result<()>{
+    std::env::set_var("RUST_LOG", "reqwest=trace");
+
+    panic::set_hook(Box::new(|panic_info| {
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            println!("panic occurred: {:?}", s);
+        } else {
+            println!("panic occurred");
+        }
+    }));
+
     log4rs::init_file("log4rs.yaml", Default::default()).unwrap();
     info!("Start Mox Master!");
     try_file_mode().await?;
@@ -38,6 +49,7 @@ async fn main()->Result<()>{
     reset_personal().await?;
     let es = auto_change_share_config().await;
     start_appointment_task().await?;
+    info!("Stop Mox Master!");
     Ok(())
 }
 

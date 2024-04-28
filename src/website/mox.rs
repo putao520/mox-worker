@@ -29,6 +29,8 @@ impl Mox{
                 let mut proxy = Proxy::all(url).unwrap();
                 if !p.is_auth() {
                     let (name, password) = p.get_auth();
+                    #[cfg(debug_assertions)]
+                    info!("auth: {:?}-{:?}", name, password);
                     proxy = proxy.basic_auth(name.as_str(), password.as_str());
                 }
                 MoxClient::new("https://citasapi.sre.gob.mx", cfg, Some(proxy))

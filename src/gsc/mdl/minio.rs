@@ -66,4 +66,40 @@ mod tests {
         let stat = bucket.stat_object(file_name).await.unwrap();
         assert!(stat.is_none());
     }
+
+    #[tokio::test]
+    async fn test_load_2_s3() {
+        let s3_config = S3Config {
+            region: "us-east-1".to_string(),
+            endpoint: "localhost:9000".to_string(),
+            access_key: "putao520".to_string(),
+            secret_key: "YuYao1022@".to_string(),
+        };
+        let mut system_config = SystemConfig::new();
+        system_config.s3_config = s3_config;
+
+
+        // 测试加载 S3
+        let bucket = load_s3(&system_config).await.unwrap();
+        assert!(bucket.exists().await.unwrap());
+
+        // 测试写入base64文本到 test.txt 文件
+        let file_name = "test.txt";
+        let string_content = "hello putao520";
+        let base64_content = general_purpose::STANDARD.encode(string_content);
+        let content = general_purpose::STANDARD.decode(base64_content.clone()).unwrap();
+        bucket.put_object(file_name, Bytes::from(content)).await.unwrap();
+
+        // 测试读取文件
+        let object = bucket.get_object(file_name).await.unwrap();
+        let content = object.text().await.unwrap();
+        assert_eq!(content, string_content);
+        let content = general_purpose::STANDARD.encode(content);
+        assert_eq!(content, base64_content);
+
+        // 测试删除文件
+        bucket.remove_object(file_name).await.unwrap();
+        let stat = bucket.stat_object(file_name).await.unwrap();
+        assert!(stat.is_none());
+    }
 }
