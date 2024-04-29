@@ -119,10 +119,10 @@ static LOAD_PERSONAL_INIT: Lazy<Option<()>> = Lazy::new(|| {
     let mut cli = get_sync_redis_connect().unwrap();
     match cli.xgroup_create_mkstream::<&str, &str, &str, String>(PersonalType::Valid.as_str(), PERSONAL_GROUP, "0") {
         Ok(_) => {
-            println!("创建消费组[personal_group]成功!");
+            info!("创建消费组[personal_group]成功!");
         }
         Err(e) => {
-            println!("创建消费组错误(不影响工作): {}", e);
+            info!("创建消费组错误(不影响工作): {}", e);
         }
     }
     Some(())
