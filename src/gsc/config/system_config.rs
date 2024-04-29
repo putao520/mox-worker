@@ -45,6 +45,7 @@ pub struct S3Config {
 // 打码配置
 #[derive(Serialize, Deserialize, FromRedisValue, ToRedisArgs, Clone)]
 pub struct CaptchaConfig {
+    pub url: String,
     pub token: String,
     pub log_message: String,
 }
@@ -81,6 +82,7 @@ impl SystemConfig {
                 secret_key: "".to_string(),
             },
             captcha: CaptchaConfig {
+                url: "".to_string(),
                 token: "".to_string(),
                 log_message: "".to_string(),
             },

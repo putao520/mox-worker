@@ -24,7 +24,7 @@ use crate::gsc::time_until::appointment_time_range;
 use crate::mox::account::{auto_recover_account, clear_account, MoxAccount, MoxEndpoint, rebuild_account};
 use crate::mox::appointment::start_appointment_task;
 use crate::mox::helper::{appointment_type_2_ids, format_phone, gender_2_id, marital_status_2_id, state_2_id};
-use crate::mox::personal::{clear_personal, EmergencyContact, Personal, reset_personal, VisaCenterDetails};
+use crate::mox::personal::{clear_personal, EmergencyContact, Personal, VisaCenterDetails};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -46,7 +46,6 @@ async fn main()->Result<()>{
     try_file_mode().await?;
     auto_recover_account();
     rebuild_account().await?;
-    reset_personal().await?;
     let es = auto_change_share_config().await;
     start_appointment_task().await?;
     info!("Stop Mox Master!");

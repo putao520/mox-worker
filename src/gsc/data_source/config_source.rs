@@ -91,6 +91,7 @@ mod tests {
                 secret_key: "hv94WgGAsqTO6YCujEXsN6ZGovKy7OW1edzz6xCV".to_string(),
             },
             captcha: CaptchaConfig {
+                url: "".to_string(),
                 token: "".to_string(),
                 log_message: "".to_string()
             },
@@ -145,6 +146,7 @@ mod tests {
                 secret_key: "hv94WgGAsqTO6YCujEXsN6ZGovKy7OW1edzz6xCV".to_string(),
             },
             captcha: CaptchaConfig {
+                url: "".to_string(),
                 token: "".to_string(),
                 log_message: "".to_string()
             },

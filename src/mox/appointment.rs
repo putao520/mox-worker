@@ -26,7 +26,7 @@ use crate::mox::birth::format_for_nut;
 use crate::mox::gender::gender_to_string;
 use crate::mox::helper::office_id_2_state_id;
 use crate::mox::offices_assign::offices_assign;
-use crate::mox::personal::{AppointmentInfo, get_valid_personal, Personal, record_exception_personal, record_success_personal, reset_personal, reset_valid_personal};
+use crate::mox::personal::{AppointmentInfo, Personal, PersonalService};
 use crate::third::cloud_code::CloudCode;
 use crate::third::interface_ip_pool::IpPoolServices;
 use crate::third::ipidea::IpIdea;
@@ -914,6 +914,7 @@ where
             }
             return Err(anyhow!(error_msg));
         }
+        let mut personal_service = PersonalService::new().await?;
         // 检查账号预约量是否
         loop {
             if !self.check_account().await? {
@@ -921,7 +922,7 @@ where
                 break;
             }
             // 抽取一个客户
-            let personal_res = get_valid_personal().await;
+            let personal_res = personal_service.get_valid_personal().await;
             if let Err(e) = personal_res {
                 error!("客户信息异常:{}", e);
                 break;
@@ -947,7 +948,7 @@ where
                             if err.no & 0x00020000 == 0x20000 {
                                 personal.log_message = err.msg.clone();
                                 need_reset = false;
-                                record_exception_personal(&personal).await?;
+                                personal_service.record_exception_personal().await?;
                             } else {
                                 if err.no & 0x00010000 == 0x10000 {
                                     return Err(anyhow!("网络系统错误"))
@@ -973,10 +974,6 @@ where
                             // continue;
                         }
                     }
-                    // 重置账号
-                    if need_reset {
-                        reset_valid_personal(&personal).await?;
-                    }
                 }
                 Ok(info) => {
                     maybe_ticket_info = Some(info);
@@ -990,7 +987,7 @@ where
             }
             personal.appointment_info = maybe_ticket_info;
             // 记录成功的客户
-            record_success_personal(&personal).await?;
+            personal_service.record_success_personal().await?;
         }
         // 返回预约凭证组
         Ok(persons)
@@ -1062,7 +1059,7 @@ fn assign_account(account: &mut MoxAccount, personal: &Personal) {
 }
 
 pub async fn start_task(account: MoxAccount, share_config: SystemConfig, local_config: FileConfig) ->Result<()> {
-    let captcha = SBCode::new();
+    let captcha = SBCode::new(&share_config.captcha);
     let mut app = if local_config.task.disable_proxy {
         MoxAppointment::new::<RoxLabs>(&account, &share_config, &local_config, captcha, None).await
     } else {
@@ -1124,7 +1121,7 @@ mod tests {
     use serde_json::json;
     use crate::gsc::config::file_config::load_file_config;
     use crate::gsc::config::system_config::{AccountConfig, CaptchaConfig, MoxClientConfig, ProxyConfig, S3Config, SystemConfig};
-    use crate::mox::personal::{add_valid_personal, EmergencyContact, Personal, reset_personal, VisaCenterDetails};
+    use crate::mox::personal::{add_valid_personal, EmergencyContact, Personal, VisaCenterDetails};
     use crate::third::cloud_code::CloudCode;
     use crate::third::interface_ip_pool::IpPoolServices;
     use crate::third::rox_labs::RoxLabs;
@@ -1150,6 +1147,7 @@ mod tests {
                 secret_key: "hv94WgGAsqTO6YCujEXsN6ZGovKy7OW1edzz6xCV".to_string(),
             },
             captcha: CaptchaConfig {
+                url: "http://150.138.84.183:9896/ocr/b64".to_string(),
                 token: "".to_string(),
                 log_message: "".to_string()
             },
@@ -1256,7 +1254,6 @@ mod tests {
     }
 
     async fn init_test_personal() -> Result<()>{
-        reset_personal().await?;
         let personal = Personal {
             name: "JUN".to_string(),
             first_name: "LV".to_string(),

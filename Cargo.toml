@@ -13,7 +13,7 @@ reqwest = { version = "0.12.4", features = ["json", "socks", "gzip", "brotli", "
 chrono = "0.4.38"
 base64 = "0.22.0"
 tokio = { version = "1.37.0", features = ["full"] }
-redis = { version = "0.25.3", features = ["tokio-comp", "json", "ahash", "connection-manager", "r2d2"] }
+redis = { version = "0.25.3", features = ["tokio-comp", "json", "ahash", "connection-manager", "r2d2", "streams"] }
 hex = "0.4.3"
 arrayref = "0.3.7"
 md-5 = "0.10.6"

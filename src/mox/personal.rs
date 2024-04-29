@@ -1,14 +1,22 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
-use redis::AsyncCommands;
+use log::info;
+use once_cell::sync::Lazy;
+use redis::aio::ConnectionManager;
+use redis::{AsyncCommands, Commands, Value};
+use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use crate::gsc::concurrency::transaction::Transaction;
 
 use crate::gsc::data_source::personal::PersonalType;
 use crate::gsc::data_source::source_service::AsStringEnum;
-// use crate::gsc::data_source::source_service::{AsStringEnum, SourceService};
-use crate::gsc::mdl::redis::get_redis_connect;
+use crate::gsc::mdl::redis::{get_redis_connect, get_sync_redis_connect};
 
 // 客户信息
 #[derive(Serialize, Deserialize, FromRedisValue, ToRedisArgs, Clone, Debug)]
@@ -99,89 +107,177 @@ impl Personal {
     }
 }
 
-// 获得一个有效客户
-pub async fn get_valid_personal() -> Result<Personal> {
-    let mut cli = get_redis_connect().await?;
-    loop {
-        let v: Vec<Personal> = cli.lpop(PersonalType::Valid.as_str(), NonZeroUsize::new(1)).await?;
-        if v.is_empty() {
-            return Err(anyhow::anyhow!("无可用客户!"));
+static IDS_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PERSONAL_GROUP: &str = "personal_group";
+pub struct PersonalService {
+    option: StreamReadOptions,
+    cli: ConnectionManager,
+    current: Option<(String, Personal)>,
+}
+
+static LOAD_PERSONAL_INIT: Lazy<Option<()>> = Lazy::new(|| {
+    let mut cli = get_sync_redis_connect().unwrap();
+    match cli.xgroup_create_mkstream::<&str, &str, &str, String>(PersonalType::Valid.as_str(), PERSONAL_GROUP, "0") {
+        Ok(_) => {
+            println!("创建消费组[personal_group]成功!");
         }
-        let r = v.get(0).unwrap().clone();
-        // 验证用户希望预约的时间是否在有效范围内
-        let now = chrono::Utc::now().timestamp();
-        if r.appointment_start > now || r.appointment_end < now {
-            record_exception_personal(&r).await?;
-            continue;
+        Err(e) => {
+            println!("创建消费组错误(不影响工作): {}", e);
         }
-        cli.hset(PersonalType::Using.as_str(), r.phone.clone() ,r.clone()).await?;
-        return Ok(r);
+    }
+    Some(())
+});
+
+static RESET_TRANSACTION: Lazy<Transaction> = Lazy::new(|| Transaction::new());
+impl PersonalService {
+    pub async fn new() -> Result<PersonalService> {
+        let _ = LOAD_PERSONAL_INIT.deref();
+        let mut cli = get_redis_connect().await?;
+        let custom_id= IDS_COUNT.fetch_add(1, Ordering::SeqCst);
+        let option = StreamReadOptions::default().group(PERSONAL_GROUP, custom_id.to_string()).count(1).noack();
+        Ok(PersonalService { option, cli, current: None })
+    }
+    pub async fn get_valid_personal(&mut self) -> Result<Personal> {
+        let mut err_no = 0;
+        loop {
+            let mut reply: StreamReadReply = self.cli.xread_options(&[PersonalType::Valid.as_str()], &[">"], &self.option).await?;
+            match reply.keys.get(0) {
+                Some(valid_stream) => {
+                    for steam_id in &valid_stream.ids {
+                        if let Some(v) = steam_id.map.get("-") {
+                            match v {
+                                Value::Data(data) => {
+                                    return match serde_json::from_slice::<Personal>(data.as_ref()) {
+                                        Ok(personal) => {
+                                            self.current = Some((steam_id.id.clone(), personal.clone()));
+                                            Ok(personal)
+                                        },
+                                        Err(e) => {
+                                            Err(anyhow::anyhow!("无法解析用户流数据: {}", e))
+                                        }
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                None => {
+                    RESET_TRANSACTION.run(|| {
+                        if let Ok(mut cli) = get_sync_redis_connect() {
+                            if let Ok(res_str) = cli.xgroup_setid::<_, _, _, String>(PersonalType::Valid.as_str(), PERSONAL_GROUP, "0") {
+                                info!("重置消费组[personal_group]成功: {}", res_str);
+                            }
+                        }
+                    }).await;
+                    if err_no > 0 {
+                        return Err(anyhow::anyhow!("无可用客户!"));
+                    }
+                    err_no+= 1;
+                }
+            }
+        }
+    }
+    pub async fn record_success_personal(&mut self) -> Result<()> {
+        self.record_personal(PersonalType::Success.as_str()).await
+    }
+
+    pub async fn record_exception_personal(&mut self) -> Result<()> {
+        self.record_personal(PersonalType::Exception.as_str()).await
+    }
+    async fn record_personal(&mut self, name: &str) -> Result<()> {
+        if let Some((msg_id, personal)) = self.current.clone() {
+            let r = self.cli.xdel(PersonalType::Valid.as_str(), &[msg_id]).await?;
+            if r {
+                let _: usize = self.cli.rpush(name, personal.phone.clone()).await?;
+                self.cli.hset("personal_phone", personal.phone.clone(), personal).await?;
+            }
+        }
+        Ok(())
     }
 }
+
+// 获得一个有效客户
+// pub async fn get_valid_personal() -> Result<Personal> {
+//     let mut cli = get_redis_connect().await?;
+//
+//     loop {
+//         let v: Vec<Personal> = cli.lpop(PersonalType::Valid.as_str(), NonZeroUsize::new(1)).await?;
+//         if v.is_empty() {
+//             return Err(anyhow::anyhow!("无可用客户!"));
+//         }
+//         let r = v.get(0).unwrap().clone();
+//         // 验证用户希望预约的时间是否在有效范围内
+//         let now = chrono::Utc::now().timestamp();
+//         if r.appointment_start > now || r.appointment_end < now {
+//             record_exception_personal(&r).await?;
+//             continue;
+//         }
+//         // cli.hset(PersonalType::Using.as_str(), r.phone.clone() ,r.clone()).await?;
+//         return Ok(r);
+//     }
+// }
 
 // 恢复一个有效客户
-pub async fn reset_valid_personal(p: &Personal) -> Result<usize> {
-    let mut cli = get_redis_connect().await?;
-    cli.hdel(PersonalType::Using.as_str(), p.phone.clone()).await?;
-    let n:usize = cli.rpush(PersonalType::Valid.as_str(), p).await?;
-    Ok(n)
-}
+// pub async fn reset_valid_personal(p: &Personal) -> Result<usize> {
+//     let mut cli = get_redis_connect().await?;
+//     cli.hdel(PersonalType::Using.as_str(), p.phone.clone()).await?;
+//     let n:usize = cli.rpush(PersonalType::Valid.as_str(), p).await?;
+//     Ok(n)
+// }
 
 // 启动进程->重置客户
-pub async fn reset_personal() ->Result<()> {
-    let mut cli = get_redis_connect().await?;
-    // 遍历 PersonalType::Using 的 hash
-    let result: HashMap<String, Personal> = cli.hgetall(PersonalType::Using.as_str()).await?;
-    for (_, value) in result.iter() {
-        if value.priority > 0 {
-            cli.lpush(PersonalType::Valid.as_str(), value).await?;
-        } else {
-            cli.rpush(PersonalType::Valid.as_str(), value).await?;
-        }
-    }
-    cli.del(PersonalType::Using.as_str()).await?;
-    Ok(())
-}
+// pub async fn reset_personal() ->Result<()> {
+//     let mut cli = get_redis_connect().await?;
+//     // 遍历 PersonalType::Using 的 hash
+//     let result: HashMap<String, Personal> = cli.hgetall(PersonalType::Using.as_str()).await?;
+//     for (_, value) in result.iter() {
+//         if value.priority > 0 {
+//             cli.lpush(PersonalType::Valid.as_str(), value).await?;
+//         } else {
+//             cli.rpush(PersonalType::Valid.as_str(), value).await?;
+//         }
+//     }
+//     cli.del(PersonalType::Using.as_str()).await?;
+//     Ok(())
+// }
 
 // 清理全部个人有关数据
 pub async fn clear_personal()->Result<()> {
     let mut cli = get_redis_connect().await?;
     cli.del(PersonalType::Valid.as_str()).await?;
-    cli.del(PersonalType::Using.as_str()).await?;
+    // cli.del(PersonalType::Using.as_str()).await?;
     cli.del(PersonalType::Success.as_str()).await?;
     cli.del(PersonalType::Exception.as_str()).await?;
+    cli.del("personal_phone").await?;
     Ok(())
 }
 
 // 新增可用用户
 pub async fn add_valid_personal(personal: &Personal) -> Result<()> {
     let mut cli = get_redis_connect().await?;
-    let _ = cli.del(PersonalType::Using.as_str()).await?;
-    if personal.priority == 0 {
-        cli.rpush(PersonalType::Valid.as_str(), personal).await?;
-    } else {
-        cli.lpush(PersonalType::Valid.as_str(), personal).await?;
-    }
+    cli.xadd(PersonalType::Valid.as_str(), "*", &[("-", personal)]).await?;
     Ok(())
 }
 
 // 记录预约成功的客户
-pub async fn record_success_personal(personal: &Personal) -> Result<()> {
-    let mut cli = get_redis_connect().await?;
-    let _: usize = cli.rpush(PersonalType::Success.as_str(), personal).await?;
-    cli.hset(format!("{}_phone", PersonalType::Success.as_str()).as_str(), personal.phone.clone(), personal).await?;
-    cli.hdel(PersonalType::Using.as_str(), personal.phone.clone()).await?;
-    Ok(())
-}
+// pub async fn record_success_personal(personal: &Personal) -> Result<()> {
+//     let mut cli = get_redis_connect().await?;
+//     let _: usize = cli.rpush(PersonalType::Success.as_str(), personal.phone.clone()).await?;
+//     cli.hset(format!("{}_phone", PersonalType::Success.as_str()).as_str(), personal.phone.clone(), personal).await?;
+//     cli.xdel(PersonalType::Success.as_str(), )
+//         // .hdel(PersonalType::Using.as_str(), personal.phone.clone()).await?;
+//     Ok(())
+// }
 
 // 记录预约失败的客户
-pub async fn record_exception_personal(personal: &Personal) -> Result<()> {
-    let mut cli = get_redis_connect().await?;
-    let _: usize = cli.rpush(PersonalType::Exception.as_str(), personal).await?;
-    cli.hset(format!("{}_phone", PersonalType::Exception.as_str()).as_str(), personal.phone.clone(), personal).await?;
-    cli.hdel(PersonalType::Using.as_str(), personal.phone.clone()).await?;
-    Ok(())
-}
+// pub async fn record_exception_personal(personal: &Personal) -> Result<()> {
+//     let mut cli = get_redis_connect().await?;
+//     let _: usize = cli.rpush(PersonalType::Exception.as_str(), personal).await?;
+//     cli.hset(format!("{}_phone", PersonalType::Exception.as_str()).as_str(), personal.phone.clone(), personal).await?;
+//     cli.hdel(PersonalType::Using.as_str(), personal.phone.clone()).await?;
+//     Ok(())
+// }
 
 #[cfg(test)]
 mod tests {
@@ -225,18 +321,24 @@ mod tests {
         clear_personal().await.unwrap();
         let personal = build_personal_info();
         add_valid_personal(&personal).await.unwrap();
-        loop {
-            // 模拟提取使用
-            match get_valid_personal().await {
-                Ok(p) => {
-                    delay_min_max_secs(5, 5).await;
-                    // 模拟有结果(成功)
-                    record_success_personal(&p).await.unwrap();
-                },
-                Err(_) => {
-                    break;
-                }
-            }
+        let mut personal2 = personal.clone();
+        personal2.phone = "+86 152 1165 5529".to_string();
+        add_valid_personal(&personal2).await.unwrap();
+        let mut personal_service = PersonalService::new().await.unwrap();
+        for _ in 0..10 {
+            let p = personal_service.get_valid_personal().await.unwrap();
+            println!("personal: {:?}", p.phone);
         }
+    }
+
+    #[tokio::test]
+    async fn test_personal_status_switch_empty() {
+        clear_personal().await.unwrap();
+        let mut personal_service = PersonalService::new().await.unwrap();
+        let res = personal_service.get_valid_personal().await;
+        if let Err(e) = res {
+            println!("error: {}", e);
+        }
+        // assert_eq!(res.is_err(), true);
     }
 }

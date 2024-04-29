@@ -24,7 +24,7 @@ pub struct PersonSource<'a> {
 
 pub enum PersonalType {
     Valid,
-    Using,
+    // Using,
     Success,
     Exception,
 }
@@ -33,7 +33,7 @@ impl AsStringEnum for PersonalType {
     fn as_str(&self) -> &'static str {
         match *self {
             PersonalType::Valid => "valid_personal",        // list
-            PersonalType::Using => "using_personal",        // hash
+            // PersonalType::Using => "using_personal",        // hash
             PersonalType::Success => "success_personal",    // list
             PersonalType::Exception => "exception_personal",// list
         }
