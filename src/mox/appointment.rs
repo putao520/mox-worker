@@ -981,7 +981,6 @@ where
                     // 关闭当前申请
                     self.close_appointment().await?;
                     error!("task-error:{}", e);
-                    let mut need_reset = true;
                     // 尝试序列化成 GscError
                     match e.downcast_ref::<Error>() {
                         Some(err) => {
@@ -989,7 +988,6 @@ where
                             // 是用户信息类错误
                             if err.no & 0x00020000 == 0x20000 {
                                 personal.log_message = err.msg.clone();
-                                need_reset = false;
                                 personal_service.record_exception_personal().await?;
                             } else {
                                 if err.no & 0x00010000 == 0x10000 {
