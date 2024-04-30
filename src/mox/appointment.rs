@@ -470,6 +470,29 @@ where
         Ok(captcha)
     }
 
+    async fn do_event(&mut self, event_block: &DayEvent, full_data: &mut Value, date_string: &String) -> Result<Option<DayEvent>>{
+        if event_block.availables_by_block > 0 && event_block.total_by_block > 0 {
+            // 填充 newSchedule
+            let full_date = format!("{}T{}", date_string, event_block.initialTime);
+            let new_schedule: NewSchedule = NewSchedule{
+                id: event_block.hash_id,
+                mainProcedureSelected: "".to_string(),
+                newDateSelected: date_string.clone(),
+                newTimeSelected: event_block.initialTime.clone(),
+                newEndTimeSelected: event_block.endTime.clone(),
+                fullDate: full_date,
+            };
+            full_data["newSchedule"] = json!(new_schedule);
+            let final_save_res = self.mox.save_data(full_data).await?;
+            if final_save_res.success {
+                return Ok( Some(event_block.clone()) )
+            }
+            // 不成功就换个时间
+            delay_min_max_secs(1, self.config.mox_client.time_period).await;
+        }
+        Ok(None)
+    }
+
     async fn final_time_range(&mut self, office_events: &OfficeEventsRequest, date_string: &String, procces_id: &String, full_data: &mut Value) ->Result<Option<DayEvent>> {
         let captcha = self.safe_captcha_valid().await?;
         // 说的目标日期的所有时间
@@ -486,27 +509,33 @@ where
         if !office_day_events.success {
             return Err(anyhow!(Error{no:0x30019, msg: "获取目标日期的所有时间失败".to_string() }))
         }
-        for event_block in &office_day_events.events {
-            if event_block.availables_by_block > 0 && event_block.total_by_block > 0 {
-                // 填充 newSchedule
-                let full_date = format!("{}T{}", date_string, event_block.initialTime);
-                let new_schedule: NewSchedule = NewSchedule{
-                    id: event_block.hash_id,
-                    mainProcedureSelected: "".to_string(),
-                    newDateSelected: date_string.clone(),
-                    newTimeSelected: event_block.initialTime.clone(),
-                    newEndTimeSelected: event_block.endTime.clone(),
-                    fullDate: full_date,
-                };
-                full_data["newSchedule"] = json!(new_schedule);
-                let final_save_res = self.mox.save_data(full_data).await?;
-                if final_save_res.success {
-                    return Ok( Some(event_block.clone()) )
+        // 数组返回events
+        if office_day_events.events.is_array() {
+            if let Some(events) = office_day_events.events.as_array() {
+                for event in events {
+                    let event_block: DayEvent = serde_json::from_value(event.clone())?;
+                    if let Ok(r) = self.do_event(&event_block, full_data, date_string).await {
+                        if r.is_some() {
+                            return Ok(r)
+                        }
+                    }
                 }
-                // 不成功就换个时间
-                delay_min_max_secs(1, self.config.mox_client.time_period).await;
             }
         }
+        // map 返回
+        if office_day_events.events.is_object() {
+            if let Some(events) = office_day_events.events.as_object() {
+                for (_, v) in events {
+                    let event_block: DayEvent = serde_json::from_value(v.clone())?;
+                    if let Ok(r) = self.do_event(&event_block, full_data, date_string).await {
+                        if r.is_some() {
+                            return Ok(r)
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(None)
     }
 
@@ -846,7 +875,7 @@ where
         // form["apmt_persons_second_additional"]["modelo_rubros_dinamico_doc_complementario"] = json!([]);
         // form["apmt_persons_second_additional"]["modelo_rubros_dinamico_doc_nacionalidad"] = json!([]);
         // form["apmt_persons_second_additional"]["modelo_rubros_dinamico_doc_probatorio"] = json!([]);
-        delay_min_max_secs(30,60).await;
+        delay_min_max_secs(50,80).await;
         self.save_data(&mut form, 4).await?;
 
         // 获得第五次提交前置数据
@@ -1093,18 +1122,18 @@ pub async fn start_appointment_task() ->Result<()> {
     let semaphore = Arc::new(Semaphore::new(local_config.task.max as usize));
     loop {
         let local = local_config.clone();
-        #[cfg(debug_assertions)]
-        info!("开始提取账号!");
         let mut share_config = get_share_config()?;
         match get_valid_account(&share_config.account).await {
             Ok(account) => {
                 #[cfg(debug_assertions)]
                 info!("成功提取账号: {}", account.email.clone());
                 let sem_clone = semaphore.clone();
+                let _permit = sem_clone.acquire().await.expect("并发队列已满!");
+                let sem_clone_inside = sem_clone.clone();
                 tokio::spawn(async move {
+                    let _permit = sem_clone_inside.acquire().await.expect("并发队列已满!_协程");
                     #[cfg(debug_assertions)]
                     info!("[debug]开始执行任务: {}", account.email.clone());
-                    let _permit = sem_clone.acquire().await.expect("并发队列已满!");
                     if let Err(e) = start_task(account, share_config, local).await {
                         error!("任务执行失败: {}", e);
                     }

@@ -84,6 +84,7 @@ pub async fn ban_account(account: &MoxAccount) -> Result<()> {
     cli.hdel(AccountType::Using.as_str(), account.email.clone()).await?;
     let mut cli_ex = get_redis_connect_ex(ACCOUNT_DB_NO).await?;
     cli_ex.del(account.email.clone()).await?;
+    cli.lpush(AccountType::Ban.as_str(), account.email.clone()).await?;
     Ok(())
 }
 

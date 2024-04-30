@@ -5,6 +5,7 @@ use serde_json::{Error, Value};
 use crate::gsc;
 
 use crate::gsc::config::system_config::MoxClientConfig;
+use crate::gsc::time_until::{delay_min_max_secs, delay_secs};
 use crate::mox::account::MoxAccount;
 use crate::third::interface_ip_pool::IpPoolServices;
 use crate::website::model::{Appointment, CountryData};
@@ -108,8 +109,21 @@ impl Mox{
         let json = serde_json::to_value(CloseAppointmentRequest{
             id
         })?;
-        self.client.post("/api/appointment/v1/close-appointment", &Option::from(json)).await?;
-        Ok(())
+        let mut err_no = 0;
+        loop {
+            match self.client.post("/api/appointment/v1/close-appointment", &Option::from(json.clone())).await {
+                Ok(_) => {
+                    return Ok(())
+                },
+                Err(err) => {
+                    if err_no > 5 {
+                        return Err(err);
+                    }
+                    err_no += 1;
+                    delay_min_max_secs(3, 8).await;
+                }
+            }
+        }
     }
 
     // 搜索Nut, 用于验证nut数据
@@ -312,11 +326,24 @@ impl Mox{
 
     // 退出登录
     pub async fn logout(&mut self) -> Result<LogoutResponse>{
-        let json_value = self.client.post("/api/appointment/v1/logout", &None).await?;
-        if self.client.common_headers.contains_key("Authorization"){
-            self.client.common_headers.remove("Authorization");
+        let mut rr_no = 0;
+        loop {
+            match self.client.post("/api/appointment/v1/logout", &None).await {
+                Ok(json_value) => {
+                    if self.client.common_headers.contains_key("Authorization"){
+                        self.client.common_headers.remove("Authorization");
+                    }
+                    return serde_json::from_value(json_value).map_err(|err| anyhow!(err))
+                },
+                Err(_) => {
+                    if rr_no > 5 {
+                        return Err(anyhow!("退出登录失败"));
+                    }
+                    rr_no += 1;
+                    delay_min_max_secs(3,5).await;
+                }
+            }
         }
-        serde_json::from_value(json_value).map_err(|err| anyhow!(err))
     }
 
     // 判断是否登录

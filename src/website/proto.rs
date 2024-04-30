@@ -472,7 +472,7 @@ pub struct OfficeDayEventsRequest {
 #[derive(Serialize, Deserialize, FromRedisValue, ToRedisArgs, Clone)]
 pub struct OfficeDayEventsResponse {
     pub success: bool, // true
-    pub events: Vec<DayEvent>, // [{DayEvent}]
+    pub events: serde_json::Value, // [{DayEvent}]
     pub existsConfig: bool, // true
     pub errors: bool, // false
 }

@@ -5,7 +5,7 @@ redis:
   password: YuYao1022
 
 task:
-  max: 1000   # 最大任务并发数
+  max: 1   # 最大任务并发数
   interval: 3000 # 每个账号登录间隔时间(毫秒)
   retry_interval: 10 # 无账号可用时,重试间隔时间(毫秒)
   disable_assign: true # 是否禁用任务分配
