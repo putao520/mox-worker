@@ -209,7 +209,7 @@ impl PersonalService {
                             None
                         };
                         if r.is_none() {
-                            delay_secs(1).await;
+                            delay_secs(30).await;
                         }
                     }
                     None
