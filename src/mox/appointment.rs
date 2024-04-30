@@ -934,7 +934,7 @@ where
             let mut personal = personal_res?;
             info!("提取客户信息: {}", personal.phone.clone());
             let mut maybe_ticket_info: Option<AppointmentInfo> = None;
-            if !self.local.task.disable_assign {
+            if !self.local.task.disable_assign && self.local.test.is_none() {
                 assign_account(&mut self.account, &personal);
             }
             let appointment_info_res = self.start_appointment(&mut personal).await;

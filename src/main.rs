@@ -13,6 +13,7 @@ use redis::AsyncCommands;
 use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncBufReadExt;
+use crate::gsc::config::file_config::{FileConfig, load_file_config};
 use crate::gsc::config::system_config::get_system_config;
 use crate::gsc::data_source::account::AccountType;
 use crate::gsc::data_source::config_source::{auto_change_share_config, clear_share_config};
@@ -52,7 +53,7 @@ async fn main()->Result<()>{
     Ok(())
 }
 
-async fn load_accounts() -> Result<()> {
+async fn load_accounts(local_cfg: &FileConfig) -> Result<()> {
     println!("Current directory For Account.txt: {:?}", std::env::current_dir()?);
 
     let path = Path::new("file_mode/account.txt");
@@ -66,7 +67,18 @@ async fn load_accounts() -> Result<()> {
             let email = parts[0].to_string().to_lowercase();
             let password = parts[1].to_string();
             println!("email: {}, password: {}", email, password);
-            cli.lpush(AccountType::Valid.as_str(), MoxAccount::new(email.clone(), password.clone(), &MoxEndpoint::new_empty())).await?;
+            // 需要关闭自动调度
+            let endpoint = if let Some(v) = &local_cfg.test {
+                MoxEndpoint {
+                    country_id: v.country_id,
+                    state_id: v.state_id,
+                    city_code: v.city_code.clone(),
+                    office_id: v.office_id,
+                }
+            } else {
+                MoxEndpoint::new_empty()
+            };
+            cli.lpush(AccountType::Valid.as_str(), MoxAccount::new(email.clone(), password.clone(), &endpoint)).await?;
         }
     }
     Ok(())
@@ -122,6 +134,8 @@ async fn load_personal()->Result<()> {
 }
 
 async fn try_file_mode() -> Result<()>{
+    let local_cfg = load_file_config()?;
+
     println!("Current directory For Folder: {:?}", std::env::current_dir()?);
     if !Path::new("file_mode").exists() {
         return Ok(());
@@ -135,7 +149,7 @@ async fn try_file_mode() -> Result<()>{
     clear_account().await?;
     clear_personal().await?;
 
-    load_accounts().await?;
+    load_accounts(&local_cfg).await?;
     load_personal().await?;
     Ok(())
 }

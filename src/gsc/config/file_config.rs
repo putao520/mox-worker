@@ -3,11 +3,13 @@ use std::io::{Read};
 use anyhow::{Result};
 use serde::{Deserialize, Serialize};
 use crate::gsc::mdl::redis::RedisConfig;
+use crate::mox::account::MoxEndpoint;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileConfig {
     pub redis: RedisConfig,
-    pub task: TaskConfig, // 任务配置
+    pub task: TaskConfig,   // 任务配置
+    pub test: Option<MoxEndpoint>,  // 测试配置
 }
 
 // 任务的配置
