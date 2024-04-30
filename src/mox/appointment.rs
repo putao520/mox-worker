@@ -895,7 +895,7 @@ where
         if let Some(r) = personal.role {
             // 是测试查询的用户
             if r == 1 {
-                return Err(anyhow!(Error{no:0x30018, msg: "[信息]测试角色->中断申请".to_string() }))
+                return Err(anyhow!(Error{no:0x30018, msg: format!("[信息]测试角色({})->中断申请", personal.phone).to_string() }))
             }
         }
 
@@ -943,6 +943,8 @@ where
     }
     pub async fn start(&mut self) -> Result<Vec<String>> {
         let persons = Vec::new();
+        let mut personal_service = PersonalService::new().await?;
+
         // 登录账号
         let login_res = self.login().await;
         if login_res.is_err() {
@@ -956,13 +958,9 @@ where
             }
             return Err(anyhow!(error_msg));
         }
-        let mut personal_service = PersonalService::new().await?;
+
         // 检查账号预约量是否
         loop {
-            if !self.check_account().await? {
-                info!("账号预约量已用完");
-                break;
-            }
             // 抽取一个客户
             let personal_res = personal_service.get_valid_personal().await;
             if let Err(e) = personal_res {
@@ -971,9 +969,14 @@ where
             }
             let mut personal = personal_res?;
             info!("提取客户信息: {}", personal.phone.clone());
+
             let mut maybe_ticket_info: Option<AppointmentInfo> = None;
             if !self.local.task.disable_assign && self.local.test.is_none() {
                 assign_account(&mut self.account, &personal);
+            }
+            if !self.check_account().await? {
+                info!("账号预约量已用完");
+                break;
             }
             let appointment_info_res = self.start_appointment(&mut personal).await;
             match appointment_info_res {
