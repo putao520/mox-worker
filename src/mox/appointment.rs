@@ -52,6 +52,7 @@ pub struct MoxAppointment<C: IdentifyingCaptcha> {
     pub mox: Mox,
     pub config: SystemConfig,
     pub local: FileConfig,
+    start_timestamp: i64,
     user: Option<User>,
     appointment_id: Option<String>,
     identifying_captcha: C,
@@ -70,6 +71,7 @@ where
             local: local.clone(),
             user: None,
             appointment_id: None,
+            start_timestamp: 0,
             identifying_captcha: captcha,
         }
     }
@@ -488,7 +490,7 @@ where
                 return Ok( Some(event_block.clone()) )
             }
             // 不成功就换个时间
-            delay_min_max_secs(1, self.config.mox_client.time_period).await;
+            delay_min_max_secs(0, self.config.mox_client.time_period).await;
         }
         Ok(None)
     }
@@ -727,7 +729,7 @@ where
                             }
                         }
                     }
-                    delay_min_max_secs(1, self.config.mox_client.date_period).await;
+                    delay_min_max_secs(0, self.config.mox_client.date_period).await;
                 }
             }
             // 月份漫步直到截止月份
@@ -784,6 +786,7 @@ where
         let mut form = serde_json::to_value(data)?;
 
         // 第一次提交预约数据
+        self.start_timestamp = Utc::now().timestamp();
         let appointment_id = self.save_data_init(&form).await?;
         // 保存 appointment_id
         self.appointment_id = Some(appointment_id.clone());
@@ -805,7 +808,7 @@ where
             }
         }
 
-        delay_min_max_secs(3,6).await;
+        // delay_min_max_secs(3,6).await;
         self.save_data(&mut form, 2).await?;
         // 获得第三次提交前置数据
         let (process_token, _) = self.get_process(&appointment_id).await?;
@@ -842,7 +845,7 @@ where
             }
         }
         update_save_date(&mut form, process_token);
-        delay_min_max_secs(0,2).await;
+        // delay_min_max_secs(0,2).await;
         self.save_data(&mut form, 3).await?;
         // 获得第四次提交前置数据
         let (process_token, _) = self.get_process(&appointment_id).await?;
@@ -875,7 +878,12 @@ where
         // form["apmt_persons_second_additional"]["modelo_rubros_dinamico_doc_complementario"] = json!([]);
         // form["apmt_persons_second_additional"]["modelo_rubros_dinamico_doc_nacionalidad"] = json!([]);
         // form["apmt_persons_second_additional"]["modelo_rubros_dinamico_doc_probatorio"] = json!([]);
-        delay_min_max_secs(50,80).await;
+
+        let mut delay_sec_num = Utc::now().timestamp() - self.start_timestamp;
+        println!("预约申请耗时: {}秒", delay_sec_num);
+        delay_sec_num = if delay_sec_num < 60 { 60 - delay_sec_num } else { 0 };
+        println!("预约补时: {}秒", delay_sec_num);
+        delay_secs(delay_sec_num as u32).await;
         self.save_data(&mut form, 4).await?;
 
         // 获得第五次提交前置数据
