@@ -10,3 +10,9 @@ task:
   retry_interval: 10 # 无账号可用时,重试间隔时间(毫秒)
   disable_assign: true # 是否禁用任务分配
   disable_proxy: true # 是否禁用代理
+
+test:
+  country_id: 13
+  state_id: 3358
+  city_code: null
+  office_id: 74
