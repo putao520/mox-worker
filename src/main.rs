@@ -115,7 +115,7 @@ async fn load_personal()->Result<()> {
                 },
                 appointment_info: None,
             };
-            cli.lpush(PersonalType::Valid.as_str(), p).await?;
+            cli.xadd(PersonalType::Valid.as_str(), "*", &[("-", p)]).await?;
         }
     }
     Ok(())

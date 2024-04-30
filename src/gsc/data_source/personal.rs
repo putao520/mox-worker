@@ -32,7 +32,7 @@ pub enum PersonalType {
 impl AsStringEnum for PersonalType {
     fn as_str(&self) -> &'static str {
         match *self {
-            PersonalType::Valid => "valid_personal",        // list
+            PersonalType::Valid => "valid_personal",        // stream
             // PersonalType::Using => "using_personal",        // hash
             PersonalType::Success => "success_personal",    // list
             PersonalType::Exception => "exception_personal",// list

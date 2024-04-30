@@ -1,40 +1,49 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use log::{debug, info};
 
 use tokio::sync::Notify;
 
 pub struct Transaction {
     blocking: Arc<AtomicBool>,
-    completed: Arc<AtomicBool>,
     notify: Arc<Notify>,
 }
 
 impl Transaction {
     pub fn new() -> Self {
         Transaction {
-            blocking: Arc::new(AtomicBool::new(false)),
-            completed: Arc::new(AtomicBool::new(true)),
+            blocking: Arc::new(AtomicBool::new(false)),     // 是否在更新中
             notify: Arc::new(Notify::new()),
         }
     }
 
-    pub async fn run<'a, F, T>(&self, f: F) -> Option<T>
+    pub async fn run<'a, F, T, R>(&self, f: F, rs: R) -> Option<T>
         where
-            F: FnOnce() -> T + Send + 'a,
+            // F: Future + Send + 'static,
+            F: Future<Output = Option<T>> + Send + 'static,
+            // F::Output: T + Send + 'static,
+            // R: Future + Send + 'static,
+            R: Future<Output = Option<()>> + Send + 'static,
+            // R::Output: T + Send + 'static,
             T: Send + 'a,
     {
-        if self.completed.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            self.blocking.store(false, Ordering::SeqCst);
+        // 如果正在更新中，等待
+        if self.blocking.load(Ordering::SeqCst) {
+            info!("Transaction is blocking, waiting...");
+            self.notify.notified().await;
         }
-        match self.blocking.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => {
-                let result = f();
-                self.completed.store(true, Ordering::SeqCst);
-                self.notify.notify_waiters();
+
+        match f.await {
+            Some(result) => {
                 Some(result)
             },
-            Err(_) => {
-                self.notify.notified().await;
+            None => {
+                if let Ok(_) = self.blocking.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
+                    rs.await;
+                    self.blocking.store(false, Ordering::SeqCst);
+                    self.notify.notify_waiters();
+                }
                 None
             }
         }

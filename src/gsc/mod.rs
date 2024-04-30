@@ -7,3 +7,4 @@ pub mod data_source;
 pub mod mdl;
 pub mod config;
 pub mod concurrency;
+pub mod debug;

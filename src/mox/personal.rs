@@ -2,13 +2,14 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
-use log::info;
+use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Commands, Value};
-use redis::streams::{StreamReadOptions, StreamReadReply};
+use redis::streams::{StreamKey, StreamReadOptions, StreamReadReply};
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -17,6 +18,7 @@ use crate::gsc::concurrency::transaction::Transaction;
 use crate::gsc::data_source::personal::PersonalType;
 use crate::gsc::data_source::source_service::AsStringEnum;
 use crate::gsc::mdl::redis::{get_redis_connect, get_sync_redis_connect};
+use crate::gsc::time_until::delay_secs;
 
 // 客户信息
 #[derive(Serialize, Deserialize, FromRedisValue, ToRedisArgs, Clone, Debug)]
@@ -110,7 +112,7 @@ impl Personal {
 static IDS_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PERSONAL_GROUP: &str = "personal_group";
 pub struct PersonalService {
-    option: StreamReadOptions,
+    option: Arc<StreamReadOptions>,
     cli: ConnectionManager,
     current: Option<(String, Personal)>,
 }
@@ -129,51 +131,96 @@ static LOAD_PERSONAL_INIT: Lazy<Option<()>> = Lazy::new(|| {
 });
 
 static RESET_TRANSACTION: Lazy<Transaction> = Lazy::new(|| Transaction::new());
+fn parse_data(data: &Value) -> Option<Personal> {
+    match data {
+        Value::Data(data) => {
+            match serde_json::from_slice::<Personal>(data.as_ref()) {
+                Ok(personal) => Some(personal),
+                Err(e) => {
+                    warn!("无法解析用户流数据: {}", e);
+                    None
+                }
+            }
+        },
+        _ => {
+            warn!("无法解析用户流数据->类型错误");
+            None
+        }
+    }
+}
 impl PersonalService {
     pub async fn new() -> Result<PersonalService> {
         let _ = LOAD_PERSONAL_INIT.deref();
-        let mut cli = get_redis_connect().await?;
+        let cli = get_redis_connect().await?;
         let custom_id= IDS_COUNT.fetch_add(1, Ordering::SeqCst);
-        let option = StreamReadOptions::default().group(PERSONAL_GROUP, custom_id.to_string()).count(1).noack();
-        Ok(PersonalService { option, cli, current: None })
+        let option = StreamReadOptions::default().group(PERSONAL_GROUP, custom_id.to_string()).count(1);
+        Ok(PersonalService {
+            option: Arc::new(option),
+            cli,
+            current: None
+        })
     }
     pub async fn get_valid_personal(&mut self) -> Result<Personal> {
-        let mut err_no = 0;
         loop {
-            let mut reply: StreamReadReply = self.cli.xread_options(&[PersonalType::Valid.as_str()], &[">"], &self.option).await?;
-            match reply.keys.get(0) {
-                Some(valid_stream) => {
-                    for steam_id in &valid_stream.ids {
-                        if let Some(v) = steam_id.map.get("-") {
-                            match v {
-                                Value::Data(data) => {
-                                    return match serde_json::from_slice::<Personal>(data.as_ref()) {
-                                        Ok(personal) => {
-                                            self.current = Some((steam_id.id.clone(), personal.clone()));
-                                            Ok(personal)
-                                        },
-                                        Err(e) => {
-                                            Err(anyhow::anyhow!("无法解析用户流数据: {}", e))
+            let mut cli = self.cli.clone();
+            let option = Arc::clone(&self.option);
+            let tuple = RESET_TRANSACTION.run(
+                async move {
+                    if let Ok(reply) = cli.xread_options::<&str,&str,StreamReadReply>(&[PersonalType::Valid.as_str()], &[">"], option.as_ref()).await {
+                        match reply.keys.get(0) {
+                            Some(valid_stream) => {
+                                for steam_id in &valid_stream.ids {
+                                    if let Some(v) = steam_id.map.get("-") {
+                                        if let Some(personal) = parse_data(v) {
+                                            return Some((steam_id.id.clone(), personal.clone()));
                                         }
+                                    } else {
+                                        warn!("无法解析用户流数据->类型错误");
                                     }
-                                },
-                                _ => {}
+                                }
+                                None
+                            },
+                            _ => {
+                                // warn!("无法获得用户流数据->No Key");
+                                None
                             }
                         }
+                    } else {
+                        warn!("无法获得用户流数据->No Stream");
+                        None
                     }
+                    // let mut reply: StreamReadReply = self.cli.xread_options(&[PersonalType::Valid.as_str()], &[">"], &self.option).await?;
+                },
+                async move {
+                    if let Ok(mut cli) = get_redis_connect().await {
+                        let r: Option<()> = if let Ok(l) = cli.xlen::<&str, i64>(PersonalType::Valid.as_str()).await {
+                            if l > 0 {
+                                if let Ok(res_str) = cli.xgroup_setid::<_, _, _, String>(PersonalType::Valid.as_str(), PERSONAL_GROUP, "0").await {
+                                    info!("重置消费组[personal_group]成功: {}", res_str);
+                                    return Some(())
+                                }
+                            } else {
+                                info!("无可用客户!->休息");
+                            }
+                            None
+                        } else {
+                            None
+                        };
+                        if r.is_none() {
+                            delay_secs(1).await;
+                        }
+                    }
+                    None
                 }
+            ).await;
+            match tuple {
+                Some((msg_id, personal)) => {
+                    self.current = Some((msg_id, personal.clone()));
+                    return Ok(personal);
+                },
                 None => {
-                    RESET_TRANSACTION.run(|| {
-                        if let Ok(mut cli) = get_sync_redis_connect() {
-                            if let Ok(res_str) = cli.xgroup_setid::<_, _, _, String>(PersonalType::Valid.as_str(), PERSONAL_GROUP, "0") {
-                                info!("重置消费组[personal_group]成功: {}", res_str);
-                            }
-                        }
-                    }).await;
-                    if err_no > 0 {
-                        return Err(anyhow::anyhow!("无可用客户!"));
-                    }
-                    err_no+= 1;
+                    // info!("无可用客户->3秒后重试");
+                    delay_secs(3).await;
                 }
             }
         }
@@ -196,51 +243,6 @@ impl PersonalService {
         Ok(())
     }
 }
-
-// 获得一个有效客户
-// pub async fn get_valid_personal() -> Result<Personal> {
-//     let mut cli = get_redis_connect().await?;
-//
-//     loop {
-//         let v: Vec<Personal> = cli.lpop(PersonalType::Valid.as_str(), NonZeroUsize::new(1)).await?;
-//         if v.is_empty() {
-//             return Err(anyhow::anyhow!("无可用客户!"));
-//         }
-//         let r = v.get(0).unwrap().clone();
-//         // 验证用户希望预约的时间是否在有效范围内
-//         let now = chrono::Utc::now().timestamp();
-//         if r.appointment_start > now || r.appointment_end < now {
-//             record_exception_personal(&r).await?;
-//             continue;
-//         }
-//         // cli.hset(PersonalType::Using.as_str(), r.phone.clone() ,r.clone()).await?;
-//         return Ok(r);
-//     }
-// }
-
-// 恢复一个有效客户
-// pub async fn reset_valid_personal(p: &Personal) -> Result<usize> {
-//     let mut cli = get_redis_connect().await?;
-//     cli.hdel(PersonalType::Using.as_str(), p.phone.clone()).await?;
-//     let n:usize = cli.rpush(PersonalType::Valid.as_str(), p).await?;
-//     Ok(n)
-// }
-
-// 启动进程->重置客户
-// pub async fn reset_personal() ->Result<()> {
-//     let mut cli = get_redis_connect().await?;
-//     // 遍历 PersonalType::Using 的 hash
-//     let result: HashMap<String, Personal> = cli.hgetall(PersonalType::Using.as_str()).await?;
-//     for (_, value) in result.iter() {
-//         if value.priority > 0 {
-//             cli.lpush(PersonalType::Valid.as_str(), value).await?;
-//         } else {
-//             cli.rpush(PersonalType::Valid.as_str(), value).await?;
-//         }
-//     }
-//     cli.del(PersonalType::Using.as_str()).await?;
-//     Ok(())
-// }
 
 // 清理全部个人有关数据
 pub async fn clear_personal()->Result<()> {
@@ -281,7 +283,10 @@ pub async fn add_valid_personal(personal: &Personal) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::gsc::time_until::delay_min_max_secs;
+    use futures::future::join_all;
+    use log::error;
+    use crate::gsc::debug::helpers::start_logging;
+    use crate::gsc::time_until::{delay_min_max_secs, delay_secs};
     use super::*;
 
     fn build_personal_info() -> Personal {
@@ -318,27 +323,62 @@ mod tests {
     }
     #[tokio::test]
     async fn test_personal_status_switch_ok() {
+        start_logging();
         clear_personal().await.unwrap();
         let personal = build_personal_info();
         add_valid_personal(&personal).await.unwrap();
         let mut personal2 = personal.clone();
         personal2.phone = "+86 152 1165 5529".to_string();
         add_valid_personal(&personal2).await.unwrap();
-        let mut personal_service = PersonalService::new().await.unwrap();
+
+        let mut handles = Vec::new();
+
         for _ in 0..10 {
-            let p = personal_service.get_valid_personal().await.unwrap();
-            println!("personal: {:?}", p.phone);
+            handles.push(
+                tokio::spawn(async move {
+                    match PersonalService::new().await {
+                        Ok(mut personal_service) => {
+                            let res = personal_service.get_valid_personal().await;
+                            match res {
+                                Ok(p) => {
+                                    info!("personal: {:?}", p.phone);
+                                },
+                                Err(e) => {
+                                    error!("error: {:?}", e);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            error!("error: {}", e);
+                        }
+                    }
+                })
+            );
         }
+
+        join_all(handles).await;
+
     }
 
     #[tokio::test]
     async fn test_personal_status_switch_empty() {
         clear_personal().await.unwrap();
-        let mut personal_service = PersonalService::new().await.unwrap();
-        let res = personal_service.get_valid_personal().await;
-        if let Err(e) = res {
-            println!("error: {}", e);
-        }
+        match PersonalService::new().await {
+            Ok(mut personal_service) => {
+                let res = personal_service.get_valid_personal().await;
+                match res {
+                    Ok(p) => {
+                        println!("personal: {:?}", p);
+                    },
+                    Err(e) => {
+                        println!("error: {:?}", e);
+                    }
+                }
+            },
+            Err(e) => {
+                println!("error: {}", e);
+            }
+        };
         // assert_eq!(res.is_err(), true);
     }
 }

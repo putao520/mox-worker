@@ -31,7 +31,7 @@ use crate::third::cloud_code::CloudCode;
 use crate::third::interface_ip_pool::IpPoolServices;
 use crate::third::ipidea::IpIdea;
 use crate::third::rox_labs::RoxLabs;
-use crate::third::sb_code::SBCode;
+use crate::third::ddd_code::DDDCode;
 
 /**
  该模块负责完成预约相关的业务逻辑
@@ -78,6 +78,10 @@ where
         loop {
             let captcha_res = self.mox.get_captcha(self.account.email.as_str()).await?;
             let captcha = self.identifying_captcha.identifying(captcha_res.img.as_str()).await?;
+            if captcha.is_empty() {
+                error!("验证码识别失败(为空): {} ", self.account.email);
+                return Err(anyhow!(Error{no:0x30001, msg: "验证码识别失败".to_string() }))
+            }
 
             // #[cfg(debug_assertions)]
             // info!("登录->验证码识别成功: {} -> {}", self.account.email, captcha);
@@ -1059,7 +1063,7 @@ fn assign_account(account: &mut MoxAccount, personal: &Personal) {
 }
 
 pub async fn start_task(account: MoxAccount, share_config: SystemConfig, local_config: FileConfig) ->Result<()> {
-    let captcha = SBCode::new(&share_config.captcha);
+    let captcha = DDDCode::new(&share_config.captcha);
     let mut app = if local_config.task.disable_proxy {
         MoxAppointment::new::<RoxLabs>(&account, &share_config, &local_config, captcha, None).await
     } else {
@@ -1121,6 +1125,7 @@ mod tests {
     use serde_json::json;
     use crate::gsc::config::file_config::load_file_config;
     use crate::gsc::config::system_config::{AccountConfig, CaptchaConfig, MoxClientConfig, ProxyConfig, S3Config, SystemConfig};
+    use crate::gsc::debug::helpers::start_logging;
     use crate::mox::personal::{add_valid_personal, EmergencyContact, Personal, VisaCenterDetails};
     use crate::third::cloud_code::CloudCode;
     use crate::third::interface_ip_pool::IpPoolServices;
@@ -1207,37 +1212,7 @@ mod tests {
         assert_eq!("给定的账号被屏蔽", cmp_str);
     }
 
-    fn start_logging() {
-        // 创建一个 Appender，将日志输出到文件
-        let logfile = FileAppender::builder()
-            .encoder(Box::new(PatternEncoder::new("{d} - {l} - {m}\n")))
-            .append(false) // 设置为false以覆盖现有文件
-            .build("log/test.log")
-            .unwrap();
 
-        // 创建一个 Appender，将日志输出到控制台
-        let console = log4rs::append::console::ConsoleAppender::builder()
-            .encoder(Box::new(PatternEncoder::new("{d} - {l} - {m}\n")))
-            .build();
-
-        // 构建日志配置
-        let config = Config::builder()
-            .appender(Appender::builder().build("logfile", Box::new(logfile)))
-            .appender(Appender::builder().build("console", Box::new(console)))
-            .build(
-                Root::builder()
-                    .appender("logfile")
-                    .appender("console")
-                    .build(LevelFilter::Info),
-            )
-            .unwrap();
-
-        // 初始化日志系统
-        log4rs::init_config(config).unwrap();
-
-        // 输出日志
-        info!("This is a test log message");
-    }
 
     #[tokio::test]
     async fn test_appointment() {
