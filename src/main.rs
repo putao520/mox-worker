@@ -114,6 +114,7 @@ async fn load_personal()->Result<()> {
                 appointment_start: s,
                 appointment_end: e,
                 priority: 0,
+                role: Some(1),
                 emergency_contact: EmergencyContact{
                     first_name: row[10].to_string(),
                     name: row[11].to_string(),

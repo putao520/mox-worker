@@ -1,37 +1,39 @@
 use std::panic;
 use std::sync::Arc;
-use log::{error, info, warn};
-use crate::third::interface_identifying_captcha::{IdentifyingCaptcha};
-use crate::mox::account::{ban_account, get_valid_account, MoxAccount};
-use crate::website::http_until::{HTTP_LANG, HTTP_PLATFORM, HTTP_USER_AGENT_HALF};
-use crate::website::model::{ApmtPersonsAdditional, ApmtPersonsDataAddressEmergency, ApmtPersonsDataAddressHome, ApmtPersonsDocuments, ApmtPersonsSelectTmpFormalities, CatOfficeData, CountryData, Date, DateData, DayEvent, Event, EvidentiaryTramites, Interval, NewSchedule, OfficePreferences, OfficeProcedure, PersonsFormalities, Procedure, SaveDataPeople, StateData, SubtipoTramite, TipoTramite, Tramite, User};
-use crate::website::mox::Mox;
-use crate::website::proto::{AvailableProceduresResponse, ConfiguredOfficesRequest, GenerateDocumentsRequest, LoginRequest, OfficeDayEventsRequest, OfficeEventsRequest, SaveAppointmentRequest, SaveDataRequest, SearchNudRequest, ServiceGetDocumentEvidentiaryRequest, ServiceNoCurpSuetRequest};
+
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use base64::engine::general_purpose;
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
+
 use crate::gsc::config::file_config::{FileConfig, load_file_config};
 use crate::gsc::config::system_config::SystemConfig;
 use crate::gsc::data_source::config_source::{get_share_config, set_share_config};
-use crate::gsc::error::{Error};
+use crate::gsc::error::Error;
 use crate::gsc::mdl::minio::load_s3;
 use crate::gsc::phone_until::get_phone_info;
 use crate::gsc::time_until::{age_from_birth_date, DateUntil, delay_max_ms, delay_max_secs, delay_min_max_secs, delay_ms, delay_secs, get_gird_month_range, get_next_day, timestamp_to_date, ymd_hms_to_timestamp, ymd_to_timestamp};
+use crate::mox::account::{ban_account, get_valid_account, MoxAccount};
 use crate::mox::birth::format_for_nut;
 use crate::mox::gender::gender_to_string;
 use crate::mox::helper::office_id_2_state_id;
 use crate::mox::offices_assign::offices_assign;
 use crate::mox::personal::{AppointmentInfo, Personal, PersonalService};
 use crate::third::cloud_code::CloudCode;
+use crate::third::ddd_code::DDDCode;
+use crate::third::interface_identifying_captcha::IdentifyingCaptcha;
 use crate::third::interface_ip_pool::IpPoolServices;
 use crate::third::ipidea::IpIdea;
 use crate::third::rox_labs::RoxLabs;
-use crate::third::ddd_code::DDDCode;
+use crate::website::http_until::{HTTP_LANG, HTTP_PLATFORM, HTTP_USER_AGENT_HALF};
+use crate::website::model::{ApmtPersonsAdditional, ApmtPersonsDataAddressEmergency, ApmtPersonsDataAddressHome, ApmtPersonsDocuments, ApmtPersonsSelectTmpFormalities, CatOfficeData, CountryData, Date, DateData, DayEvent, Event, EvidentiaryTramites, Interval, NewSchedule, OfficePreferences, OfficeProcedure, PersonsFormalities, Procedure, SaveDataPeople, StateData, SubtipoTramite, TipoTramite, Tramite, User};
+use crate::website::mox::Mox;
+use crate::website::proto::{AvailableProceduresResponse, ConfiguredOfficesRequest, GenerateDocumentsRequest, LoginRequest, OfficeDayEventsRequest, OfficeEventsRequest, SaveAppointmentRequest, SaveDataRequest, SearchNudRequest, ServiceGetDocumentEvidentiaryRequest, ServiceNoCurpSuetRequest};
 
 /**
  该模块负责完成预约相关的业务逻辑
@@ -468,7 +470,7 @@ where
         Ok(captcha)
     }
 
-    async fn final_time_range(&mut self, office_events: &OfficeEventsRequest, date_string: &String, procces_id: &String, full_data: &mut Value) ->Result<(Option<DayEvent>, Value)> {
+    async fn final_time_range(&mut self, office_events: &OfficeEventsRequest, date_string: &String, procces_id: &String, full_data: &mut Value) ->Result<Option<DayEvent>> {
         let captcha = self.safe_captcha_valid().await?;
         // 说的目标日期的所有时间
         let input: OfficeDayEventsRequest = OfficeDayEventsRequest {
@@ -499,13 +501,13 @@ where
                 full_data["newSchedule"] = json!(new_schedule);
                 let final_save_res = self.mox.save_data(full_data).await?;
                 if final_save_res.success {
-                    return Ok( (Option::from(event_block.clone()), final_save_res.data))
+                    return Ok( Some(event_block.clone()) )
                 }
                 // 不成功就换个时间
                 delay_min_max_secs(1, self.config.mox_client.time_period).await;
             }
         }
-        Ok((None, Value::Null))
+        Ok(None)
     }
 
     fn get_country(&mut self, country_id: u32) -> Result<CountryData> {
@@ -690,7 +692,7 @@ where
                     if event.availables_by_day > 0 && event.total_by_day > 0 {
                         let event_timestamp = ymd_to_timestamp(event.date.as_str());
                         if event_timestamp >= start_timestamp && event_timestamp < end_timestamp {
-                            let (final_res, v) = self.final_time_range(&office_event_request, &event.date, traking_id, full_data).await?;
+                            let final_res = self.final_time_range(&office_event_request, &event.date, traking_id, full_data).await?;
                             if final_res.is_some() {
                                 return Ok(final_res)
                             }
@@ -860,6 +862,13 @@ where
         let end_str = format!("{}T{}", day_event.date, day_event.endTime);
 
         println!("EndTime {}", end_str.as_str());
+
+        if let Some(r) = personal.role {
+            // 是测试查询的用户
+            if r == 1 {
+                return Err(anyhow!(Error{no:0x30018, msg: "[信息]测试角色->中断申请".to_string() }))
+            }
+        }
 
         let input: SaveAppointmentRequest = SaveAppointmentRequest{
             date: Date{
@@ -1113,22 +1122,16 @@ pub async fn start_appointment_task() ->Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::gsc::data_source::config_source::{get_share_config, set_share_config};
-    use crate::mox::account::{MoxAccount, MoxEndpoint};
-    use crate::mox::appointment::{MoxAppointment, start_task};
-    use anyhow::{Result};
-    use log4rs::append::file::FileAppender;
-    use log4rs::Config;
-    use log4rs::config::{Appender, Root};
-    use log4rs::encode::pattern::PatternEncoder;
-    use log::{info, LevelFilter};
-    use serde_json::json;
+    use anyhow::Result;
+
     use crate::gsc::config::file_config::load_file_config;
     use crate::gsc::config::system_config::{AccountConfig, CaptchaConfig, MoxClientConfig, ProxyConfig, S3Config, SystemConfig};
+    use crate::gsc::data_source::config_source::{get_share_config, set_share_config};
     use crate::gsc::debug::helpers::start_logging;
+    use crate::mox::account::{MoxAccount, MoxEndpoint};
+    use crate::mox::appointment::{MoxAppointment, start_task};
     use crate::mox::personal::{add_valid_personal, EmergencyContact, Personal, VisaCenterDetails};
     use crate::third::cloud_code::CloudCode;
-    use crate::third::interface_ip_pool::IpPoolServices;
     use crate::third::rox_labs::RoxLabs;
 
     fn init_test_config() {
@@ -1241,6 +1244,7 @@ mod tests {
             passport: None,
             nut: None,
             priority: 1,
+            role: Some(1),
             state_id: 3649,
             country_id: 44,
             city_address: "-".to_string(),

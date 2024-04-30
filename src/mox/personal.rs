@@ -39,6 +39,7 @@ pub struct Personal {
     pub appointment_start: i64,                 // 预约日期开始日期[时间戳,秒]    -> 原来是 YYYY-MM-DD,现在是 YYYY-MM-DD HH:MM:SS 的时间戳
     pub appointment_end: i64,                   // 预约日期结束日期[时间戳](结束当天还会尝试预约) -> 同上
     pub priority: u32,                          // 优先级 0, 1
+    pub role: Option<u32>,                      // 角色 0:预约者, 1:查询者
     pub emergency_contact: EmergencyContact,    // 紧急联系人信息
     pub visa_center_details: VisaCenterDetails, // 签证中心及预约信息
     pub appointment_info: Option<AppointmentInfo>,     // 预约成功后的票据id
@@ -90,6 +91,7 @@ impl Personal {
             passport: None,
             nut: None,
             priority: 0,
+            role: Some(1),
             appointment_start: 0,
             appointment_end: 0,
             emergency_contact: EmergencyContact {
@@ -302,6 +304,7 @@ mod tests {
             passport: None,
             nut: None,
             priority: 1,
+            role: Some(1),
             state_id: 3649,
             country_id: 44,
             city_address: "-".to_string(),
